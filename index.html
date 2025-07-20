@@ -449,12 +449,13 @@
         name: form.name.value.trim(),
         email: form.email.value.trim(),
         phone: form.phone.value.trim(),
+        company: form.company.value.trim(),
         subject: form.subject.value.trim(),
         message: form.message.value.trim()
       };
 
       try {
-        const response = await fetch('http://localhost:3001/api/contact', {
+        const response = await fetch('/api/contact', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(formData)
