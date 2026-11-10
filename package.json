@@ -1,20 +1,19 @@
 {
   "name": "sri-balaji-industries",
-  "version": "1.0.0",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Sri Balaji Industries – professional tamarind seed processing website",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["tamarind", "seed", "processing", "industrial"],
+  "author": "Sri Balaji Industries",
   "license": "ISC",
-  "description": "",
   "dependencies": {
-    "body-parser": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",
-    "nodemailer": "^7.0.5"
+    "resend": "^4.0.0"
   }
 }

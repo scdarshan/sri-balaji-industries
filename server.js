@@ -1,77 +1,214 @@
-require('dotenv').config(); // Load environment variables from .env file
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const path = require('path');
-const nodemailer = require('nodemailer');
+/**
+ * Sri Balaji Industries – Server v2.0
+ * Resend email API · rate limiting · honeypot · input sanitisation · CORS
+ */
 
-const app = express();
-// The port will be set by the hosting provider (e.g., Render) via an environment variable.
+require('dotenv').config();
+const express  = require('express');
+const cors     = require('cors');
+const path     = require('path');
+const { Resend } = require('resend');
+
+/* ─── Resend client ─── */
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+/* ─── App setup ─── */
+const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors()); // Enable Cross-Origin Resource Sharing
-app.use(bodyParser.json()); // Parse JSON bodies
-app.use(bodyParser.urlencoded({ extended: true })); // Parse URL-encoded bodies
+// Trust the first proxy hop (required for correct client IP on Render)
+app.set('trust proxy', 1);
 
-// Serve static files (HTML, CSS, JS, images) from the root directory
-app.use(express.static(path.join(__dirname)));
+/* ─── CORS ─── */
+const allowedOrigins = [
+  process.env.SITE_URL,          // production URL from env
+  'http://localhost:3001',        // local dev
+  'http://127.0.0.1:3001',
+].filter(Boolean);
 
-// Nodemailer transporter setup
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // Use SSL
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (e.g. mobile apps, curl, same-origin)
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error('CORS policy: origin not allowed'));
   },
-  debug: true, // show SMTP traffic in the console
-  logger: true // log information in console
-});
+  methods: ['POST', 'GET', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
 
-// API endpoint for the contact form
-app.post('/api/contact', async (req, res) => {
-  const { name, email, phone, company, subject, message } = req.body;
+/* ─── Body parsing – cap at 10 KB to block oversized payloads ─── */
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-  // Basic validation
-  if (!name || !email || !subject || !message) {
-    return res.status(400).json({ error: 'All required fields must be filled out.' });
+/* ─── Static files ─── */
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1d', // Cache static assets for 1 day
+  setHeaders: (res, filePath) => {
+    // Ensure HTML is revalidated
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
   }
-  
-  console.log('Received contact form submission:', req.body);
+}));
 
-  const mailOptions = {
-    from: `"Website Contact Form" <${process.env.EMAIL_USER}>`,
-    to: process.env.EMAIL_TO, // The email address where you want to receive notifications
-    subject: `New Contact Form Submission: ${subject}`,
-    html: `
-      <h2>New Message from Sri Balaji Industries Website</h2>
-      <p><strong>Name:</strong> ${name}</p>
-      <p><strong>Email:</strong> ${email}</p>
-      <p><strong>Company:</strong> ${company || 'Not provided'}</p>
-      <p><strong>Phone:</strong> ${phone || 'Not provided'}</p>
-      <p><strong>Subject:</strong> ${subject}</p>
-      <hr>
-      <h3>Message:</h3>
-      <p>${message}</p>
-    `,
-  };
+/* ─── In-memory rate limiter with automated cleanup (IP · 5 requests / 15 min) ─── */
+const rateMap = new Map();
+const RATE_LIMIT   = 5;
+const RATE_WINDOW  = 15 * 60 * 1000; // 15 minutes
+
+// Clean up expired entries every 30 minutes to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of rateMap.entries()) {
+    if (now - rec.start > RATE_WINDOW) {
+      rateMap.delete(ip);
+    }
+  }
+}, 30 * 60 * 1000).unref();
+
+function rateLimiter(req, res, next) {
+  const ip  = req.ip || 'unknown';
+  const now = Date.now();
+  const rec = rateMap.get(ip) || { count: 0, start: now };
+
+  if (now - rec.start > RATE_WINDOW) {
+    rec.count = 0;
+    rec.start = now;
+  }
+
+  rec.count += 1;
+  rateMap.set(ip, rec);
+
+  if (rec.count > RATE_LIMIT) {
+    return res.status(429).json({ error: 'Too many requests. Please wait a few minutes before trying again.' });
+  }
+  next();
+}
+
+/* ─── HTML escaping helper (prevents email HTML injection) ─── */
+function escapeHtml(str) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/* ─── Control character / CRLF stripper (prevents email header injection) ─── */
+function stripControlChars(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/[\r\n\x00-\x1F\x7F]/g, ' ').trim();
+}
+
+/* ─── Email validation helper (RFC-compliant simplified check) ─── */
+function isValidEmail(email) {
+  return /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(email);
+}
+
+/* ─── Contact form endpoint ─── */
+app.post('/api/contact', rateLimiter, async (req, res) => {
+  const { name, email, phone, company, subject, message, honeypot } = req.body;
+
+  // Honeypot: if filled, quietly succeed to trap bots
+  if (honeypot) {
+    return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you soon.' });
+  }
+
+  // Server-side validation
+  if (!name || !email || !subject || !message) {
+    return res.status(400).json({ error: 'Please fill in all required fields.' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+  if (message.trim().length < 10) {
+    return res.status(400).json({ error: 'Message is too short. Please provide more detail.' });
+  }
+
+  // Strip headers and control characters
+  const cleanSubject = stripControlChars(subject).slice(0, 150);
+  const cleanEmail   = stripControlChars(email).slice(0, 200);
+
+  // Sanitise HTML inputs before embedding in template
+  const safeName    = escapeHtml(stripControlChars(name).slice(0, 100));
+  const safeEmail   = escapeHtml(cleanEmail);
+  const safePhone   = escapeHtml(stripControlChars(phone || '').slice(0, 30));
+  const safeCompany = escapeHtml(stripControlChars(company || '').slice(0, 100));
+  const safeSubject = escapeHtml(cleanSubject);
+  const safeMessage = escapeHtml(message.trim().slice(0, 3000));
 
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log('Notification email sent successfully.');
-    console.log('Message sent: %s', info.messageId);
-    console.log('SMTP Response: %s', info.response);
-    // Send a success response back to the client
-    res.status(200).json({ message: 'Thank you for your message! We will get back to you soon.' });
+    const data = await resend.emails.send({
+      from:     process.env.EMAIL_FROM || 'Sri Balaji Industries <onboarding@resend.dev>',
+      to:       process.env.EMAIL_TO || 'sribalajiindustries@gmail.com',
+      reply_to: cleanEmail,
+      replyTo:  cleanEmail, // compatible across Resend SDK versions
+      subject:  `New Enquiry: ${cleanSubject}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #F7B538; padding: 24px 30px; text-align: left;">
+            <h2 style="margin: 0; color: #111111; font-size: 20px;">New Enquiry &ndash; Sri Balaji Industries</h2>
+          </div>
+          <div style="padding: 30px;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.5;">
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; width: 120px; color: #444;">Name</td>
+                <td style="padding: 10px 0; color: #111;">${safeName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Email</td>
+                <td style="padding: 10px 0; color: #111;"><a href="mailto:${safeEmail}" style="color: #3A6B35; text-decoration: none;">${safeEmail}</a></td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Phone</td>
+                <td style="padding: 10px 0; color: #111;">${safePhone || '<em>Not provided</em>'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Company</td>
+                <td style="padding: 10px 0; color: #111;">${safeCompany || '<em>Not provided</em>'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Subject</td>
+                <td style="padding: 10px 0; color: #111;">${safeSubject}</td>
+              </tr>
+            </table>
+            <hr style="border: none; border-top: 1px solid #eeeeee; margin: 24px 0;">
+            <h3 style="color: #3A6B35; font-size: 16px; margin: 0 0 12px;">Message Content</h3>
+            <div style="background-color: #f9f9f9; padding: 18px; border-radius: 6px; border: 1px solid #f0f0f0; white-space: pre-wrap; font-family: inherit; font-size: 14px; color: #333; line-height: 1.6;">${safeMessage}</div>
+            <p style="margin-top: 24px; font-size: 12px; color: #777777;">
+              Tip: Replying directly to this email will send your response to <strong>${safeEmail}</strong>.
+            </p>
+          </div>
+          <div style="background-color: #2D2D2D; padding: 16px 30px; text-align: center;">
+            <p style="color: #cccccc; margin: 0; font-size: 12px;">Sri Balaji Industries &middot; D.No. 5-63A, Amarapuram &ndash; 515281, India</p>
+          </div>
+        </div>
+      `,
+    });
+
+    if (data.error) {
+      console.error('Resend API error:', JSON.stringify(data.error, null, 2));
+      return res.status(500).json({ error: 'Unable to send message at this time. Please contact us via phone or WhatsApp.' });
+    }
+
+    return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you within one business day.' });
   } catch (error) {
-    console.error('Error sending email:', error);
-    res.status(500).json({ error: 'Sorry, there was an error sending your message. Please try again later.' });
+    console.error('Unexpected email dispatch error:', error.message, error.stack);
+    return res.status(500).json({ error: 'Sorry, there was a problem sending your message. Please call us or try again later.' });
   }
 });
 
-// Start the server
+/* ─── Health check (for Render uptime monitoring) ─── */
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+/* ─── Fallback: serve index.html for any unknown GET ─── */
+app.get('/{*splat}', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+/* ─── Start ─── */
 app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Sri Balaji Industries server running on port ${PORT}`);
 });
