@@ -1084,23 +1084,9 @@ header[style*="top: -100px"] nav ul.show {
 /* ── Leader card image sizing ─── */
 .leader-card img {
   width: 100%;
-  height: 280px;
+  height: 320px;
   object-fit: cover;
-  object-position: top;
-}
-
-/* ── SKC image – show full photo, no cropping ─── */
-.leader-img-contain {
-  height: auto !important;
-  object-fit: unset !important;
-  width: 100%;
-  display: block;
-  background-color: #f0f0f0;
-}
-
-/* Card that holds a full-size landscape photo must not clip it */
-.leader-card:has(.leader-img-contain) {
-  overflow: visible;
+  object-position: center top;
 }
 
 /* ── Product gallery cards with label overlay ─── */

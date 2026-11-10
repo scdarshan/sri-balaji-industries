@@ -189,13 +189,13 @@ app.post('/api/contact', rateLimiter, async (req, res) => {
     });
 
     if (data.error) {
-      console.error('Resend API returned an error:', data.error);
+      console.error('Resend API error:', JSON.stringify(data.error, null, 2));
       return res.status(500).json({ error: 'Unable to send message at this time. Please contact us via phone or WhatsApp.' });
     }
 
     return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you within one business day.' });
   } catch (error) {
-    console.error('Unexpected email dispatch error:', error);
+    console.error('Unexpected email dispatch error:', error.message, error.stack);
     return res.status(500).json({ error: 'Sorry, there was a problem sending your message. Please call us or try again later.' });
   }
 });
