@@ -28,7 +28,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (Postman, curl) only in dev
+    // Allow requests with no origin (e.g. mobile apps, curl, same-origin)
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
     cb(new Error('CORS policy: origin not allowed'));
   },
@@ -41,12 +41,30 @@ app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 /* ─── Static files ─── */
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1d', // Cache static assets for 1 day
+  setHeaders: (res, filePath) => {
+    // Ensure HTML is revalidated
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
+  }
+}));
 
-/* ─── Simple in-memory rate limiter (IP · 5 requests / 15 min) ─── */
+/* ─── In-memory rate limiter with automated cleanup (IP · 5 requests / 15 min) ─── */
 const rateMap = new Map();
 const RATE_LIMIT   = 5;
-const RATE_WINDOW  = 15 * 60 * 1000; // 15 minutes in ms
+const RATE_WINDOW  = 15 * 60 * 1000; // 15 minutes
+
+// Clean up expired entries every 30 minutes to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of rateMap.entries()) {
+    if (now - rec.start > RATE_WINDOW) {
+      rateMap.delete(ip);
+    }
+  }
+}, 30 * 60 * 1000).unref();
 
 function rateLimiter(req, res, next) {
   const ip  = req.ip || 'unknown';
@@ -62,7 +80,7 @@ function rateLimiter(req, res, next) {
   rateMap.set(ip, rec);
 
   if (rec.count > RATE_LIMIT) {
-    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    return res.status(429).json({ error: 'Too many requests. Please wait a few minutes before trying again.' });
   }
   next();
 }
@@ -78,18 +96,24 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-/* ─── Email validation helper ─── */
+/* ─── Control character / CRLF stripper (prevents email header injection) ─── */
+function stripControlChars(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/[\r\n\x00-\x1F\x7F]/g, ' ').trim();
+}
+
+/* ─── Email validation helper (RFC-compliant simplified check) ─── */
 function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+  return /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(email);
 }
 
 /* ─── Contact form endpoint ─── */
 app.post('/api/contact', rateLimiter, async (req, res) => {
   const { name, email, phone, company, subject, message, honeypot } = req.body;
 
-  // Honeypot: if the hidden field is filled, it's a bot
+  // Honeypot: if filled, quietly succeed to trap bots
   if (honeypot) {
-    return res.status(200).json({ message: 'Thank you for your message!' }); // silent discard
+    return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you soon.' });
   }
 
   // Server-side validation
@@ -103,56 +127,81 @@ app.post('/api/contact', rateLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Message is too short. Please provide more detail.' });
   }
 
-  // Sanitise inputs before embedding in email HTML
-  const safeName    = escapeHtml(name.trim().slice(0, 100));
-  const safeEmail   = escapeHtml(email.trim().slice(0, 200));
-  const safePhone   = escapeHtml((phone   || '').trim().slice(0, 30));
-  const safeCompany = escapeHtml((company || '').trim().slice(0, 150));
-  const safeSubject = escapeHtml(subject.trim().slice(0, 200));
+  // Strip headers and control characters
+  const cleanSubject = stripControlChars(subject).slice(0, 150);
+  const cleanEmail   = stripControlChars(email).slice(0, 200);
+
+  // Sanitise HTML inputs before embedding in template
+  const safeName    = escapeHtml(stripControlChars(name).slice(0, 100));
+  const safeEmail   = escapeHtml(cleanEmail);
+  const safePhone   = escapeHtml(stripControlChars(phone || '').slice(0, 30));
+  const safeCompany = escapeHtml(stripControlChars(company || '').slice(0, 100));
+  const safeSubject = escapeHtml(cleanSubject);
   const safeMessage = escapeHtml(message.trim().slice(0, 3000));
 
   try {
-    await resend.emails.send({
-      from:     process.env.EMAIL_FROM,
-      to:       process.env.EMAIL_TO,
-      replyTo:  safeEmail,
-      subject:  `New Enquiry: ${safeSubject}`,
+    const data = await resend.emails.send({
+      from:     process.env.EMAIL_FROM || 'Sri Balaji Industries <onboarding@resend.dev>',
+      to:       process.env.EMAIL_TO || 'sribalajiindustries@gmail.com',
+      reply_to: cleanEmail,
+      replyTo:  cleanEmail, // compatible across Resend SDK versions
+      subject:  `New Enquiry: ${cleanSubject}`,
       html: `
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #eee;border-radius:8px;overflow:hidden;">
-          <div style="background:#F7B538;padding:20px 30px;">
-            <h2 style="margin:0;color:#000;">New Enquiry – Sri Balaji Industries</h2>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff;">
+          <div style="background-color: #F7B538; padding: 24px 30px; text-align: left;">
+            <h2 style="margin: 0; color: #111111; font-size: 20px;">New Enquiry &ndash; Sri Balaji Industries</h2>
           </div>
-          <div style="padding:30px;">
-            <table style="width:100%;border-collapse:collapse;">
-              <tr><td style="padding:8px 0;font-weight:bold;width:120px;">Name</td><td style="padding:8px 0;">${safeName}</td></tr>
-              <tr><td style="padding:8px 0;font-weight:bold;">Email</td><td style="padding:8px 0;"><a href="mailto:${safeEmail}">${safeEmail}</a></td></tr>
-              <tr><td style="padding:8px 0;font-weight:bold;">Phone</td><td style="padding:8px 0;">${safePhone || '<em>Not provided</em>'}</td></tr>
-              <tr><td style="padding:8px 0;font-weight:bold;">Company</td><td style="padding:8px 0;">${safeCompany || '<em>Not provided</em>'}</td></tr>
-              <tr><td style="padding:8px 0;font-weight:bold;">Subject</td><td style="padding:8px 0;">${safeSubject}</td></tr>
+          <div style="padding: 30px;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.5;">
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; width: 120px; color: #444;">Name</td>
+                <td style="padding: 10px 0; color: #111;">${safeName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Email</td>
+                <td style="padding: 10px 0; color: #111;"><a href="mailto:${safeEmail}" style="color: #3A6B35; text-decoration: none;">${safeEmail}</a></td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Phone</td>
+                <td style="padding: 10px 0; color: #111;">${safePhone || '<em>Not provided</em>'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Company</td>
+                <td style="padding: 10px 0; color: #111;">${safeCompany || '<em>Not provided</em>'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 0; font-weight: bold; color: #444;">Subject</td>
+                <td style="padding: 10px 0; color: #111;">${safeSubject}</td>
+              </tr>
             </table>
-            <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
-            <h3 style="color:#3A6B35;">Message</h3>
-            <p style="white-space:pre-wrap;background:#f9f9f9;padding:15px;border-radius:4px;">${safeMessage}</p>
-            <p style="margin-top:20px;font-size:0.85rem;color:#777;">
-              To reply, simply hit Reply – the visitor's email is set as Reply-To.
+            <hr style="border: none; border-top: 1px solid #eeeeee; margin: 24px 0;">
+            <h3 style="color: #3A6B35; font-size: 16px; margin: 0 0 12px;">Message Content</h3>
+            <div style="background-color: #f9f9f9; padding: 18px; border-radius: 6px; border: 1px solid #f0f0f0; white-space: pre-wrap; font-family: inherit; font-size: 14px; color: #333; line-height: 1.6;">${safeMessage}</div>
+            <p style="margin-top: 24px; font-size: 12px; color: #777777;">
+              Tip: Replying directly to this email will send your response to <strong>${safeEmail}</strong>.
             </p>
           </div>
-          <div style="background:#2D2D2D;padding:15px 30px;text-align:center;">
-            <p style="color:#aaa;margin:0;font-size:0.8rem;">Sri Balaji Industries · D.No. 5-63A, Amarapuram – 515281, India</p>
+          <div style="background-color: #2D2D2D; padding: 16px 30px; text-align: center;">
+            <p style="color: #cccccc; margin: 0; font-size: 12px;">Sri Balaji Industries &middot; D.No. 5-63A, Amarapuram &ndash; 515281, India</p>
           </div>
         </div>
       `,
     });
 
-    res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you within one business day.' });
+    if (data.error) {
+      console.error('Resend API returned an error:', data.error);
+      return res.status(500).json({ error: 'Unable to send message at this time. Please contact us via phone or WhatsApp.' });
+    }
+
+    return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you within one business day.' });
   } catch (error) {
-    console.error('Resend error:', error);
-    res.status(500).json({ error: 'Sorry, there was a problem sending your message. Please call us or try again later.' });
+    console.error('Unexpected email dispatch error:', error);
+    return res.status(500).json({ error: 'Sorry, there was a problem sending your message. Please call us or try again later.' });
   }
 });
 
 /* ─── Health check (for Render uptime monitoring) ─── */
-app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 /* ─── Fallback: serve index.html for any unknown GET ─── */
 app.get('*', (_req, res) => {
@@ -160,4 +209,6 @@ app.get('*', (_req, res) => {
 });
 
 /* ─── Start ─── */
-app.listen(PORT, () => console.log(`Sri Balaji Industries server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Sri Balaji Industries server running on port ${PORT}`);
+});
