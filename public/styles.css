@@ -1089,12 +1089,18 @@ header[style*="top: -100px"] nav ul.show {
   object-position: top;
 }
 
-/* ── SKC portrait – show full face, no crop ─── */
+/* ── SKC image – show full photo, no cropping ─── */
 .leader-img-contain {
-  object-fit: contain !important;
-  object-position: center !important;
+  height: auto !important;
+  object-fit: unset !important;
+  width: 100%;
+  display: block;
   background-color: #f0f0f0;
-  padding: 8px;
+}
+
+/* Card that holds a full-size landscape photo must not clip it */
+.leader-card:has(.leader-img-contain) {
+  overflow: visible;
 }
 
 /* ── Product gallery cards with label overlay ─── */
