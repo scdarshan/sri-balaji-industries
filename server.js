@@ -198,7 +198,10 @@ app.post('/api/contact', rateLimiter, async (req, res) => {
     return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you within one business day.' });
   } catch (error) {
     console.error('Unexpected email dispatch error:', error.message, error.stack);
-    return res.status(500).json({ error: 'Sorry, there was a problem sending your message. Please call us or try again later.' });
+    const providerMessage = error?.message || 'The email provider did not accept the request.';
+    return res.status(502).json({
+      error: `Email delivery failed: ${providerMessage}`,
+    });
   }
 });
 
