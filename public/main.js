@@ -176,7 +176,10 @@ if (contactForm) {
         body: JSON.stringify(payload),
       });
 
-      const result = await response.json();
+      const contentType = response.headers.get('content-type') || '';
+      const result = contentType.includes('application/json')
+        ? await response.json()
+        : { error: 'The mail service returned an unexpected response. Please try again or contact us by phone.' };
 
       if (!response.ok) throw new Error(result.error || 'Failed to send message.');
 

@@ -143,8 +143,7 @@ app.post('/api/contact', rateLimiter, async (req, res) => {
     const data = await resend.emails.send({
       from:     process.env.EMAIL_FROM || 'Sri Balaji Industries <onboarding@resend.dev>',
       to:       process.env.EMAIL_TO || 'sribalajiindustries@gmail.com',
-      reply_to: cleanEmail,
-      replyTo:  cleanEmail, // compatible across Resend SDK versions
+      replyTo: cleanEmail,
       subject:  `New Enquiry: ${cleanSubject}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff;">
