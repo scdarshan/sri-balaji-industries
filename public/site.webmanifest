@@ -1,0 +1,16 @@
+{
+  "name": "Sri Balaji Industries",
+  "short_name": "Sri Balaji",
+  "description": "Premium tamarind seed processing since 2002.",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#000000",
+  "theme_color": "#F7B538",
+  "icons": [
+    {
+      "src": "logo.webp",
+      "sizes": "any",
+      "type": "image/webp"
+    }
+  ]
+}
