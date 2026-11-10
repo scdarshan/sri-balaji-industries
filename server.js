@@ -188,8 +188,11 @@ app.post('/api/contact', rateLimiter, async (req, res) => {
     });
 
     if (data.error) {
+      const resendMessage = data.error.message || 'Unable to send the email.';
       console.error('Resend API error:', JSON.stringify(data.error, null, 2));
-      return res.status(500).json({ error: 'Unable to send message at this time. Please contact us via phone or WhatsApp.' });
+      return res.status(502).json({
+        error: `Email delivery failed: ${resendMessage}`,
+      });
     }
 
     return res.status(200).json({ message: 'Thank you for your enquiry! We will get back to you within one business day.' });
