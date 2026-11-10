@@ -10,8 +10,7 @@ const path     = require('path');
 const { Resend } = require('resend');
 
 /* ─── Resend client ─── */
-const resendApiKey = process.env.RESEND_API_KEY || 're_dummy_dev_key';
-const resend = new Resend(resendApiKey);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ─── App setup ─── */
 const app  = express();
@@ -205,7 +204,7 @@ app.post('/api/contact', rateLimiter, async (req, res) => {
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 /* ─── Fallback: serve index.html for any unknown GET ─── */
-app.get('{*splat}', (_req, res) => {
+app.get('/{*splat}', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

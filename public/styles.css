@@ -1088,3 +1088,49 @@ header[style*="top: -100px"] nav ul.show {
   object-fit: cover;
   object-position: top;
 }
+
+/* ── SKC portrait – show full face, no crop ─── */
+.leader-img-contain {
+  object-fit: contain !important;
+  object-position: center !important;
+  background-color: #f0f0f0;
+  padding: 8px;
+}
+
+/* ── Product gallery cards with label overlay ─── */
+.gallery-item.product-card {
+  position: relative;
+}
+
+.gallery-item.product-card img {
+  width: 100%;
+  height: 250px;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.5s ease;
+}
+
+.gallery-item.product-card:hover img {
+  transform: scale(1.07);
+}
+
+.product-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0,0,0,0.75));
+  color: #fff;
+  padding: 20px 16px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.product-label i {
+  color: var(--primary);
+  font-size: 1.1rem;
+}
